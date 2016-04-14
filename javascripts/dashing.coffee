@@ -34,12 +34,13 @@ Dashing.params = Batman.URI.paramsFromQuery(window.location.search.slice(1));
 class Dashing.Widget extends Batman.View
   constructor:  ->
     # Set the view path
-    @constructor::source = Batman.Filters.underscore(@constructor.name)
+    @constructor::source = Batman.Filters.underscore(@getName())
     super
 
     @mixin($(@node).data())
     Dashing.widgets[@id] ||= []
     Dashing.widgets[@id].push(@)
+    @mixin(Dashing.lastEvents[@id]) # in case the events from the server came before the widget was rendered
 
     type = Batman.Filters.dashize(@view)
     $(@node).addClass("widget widget-#{type} #{@id}")
@@ -54,18 +55,17 @@ class Dashing.Widget extends Batman.View
   @::on 'ready', ->
     Dashing.Widget.fire 'ready'
 
-    # In case the events from the server came before the widget was rendered
-    lastData = Dashing.lastEvents[@id]
-    if lastData
-      @mixin(lastData)
-      @onData(lastData)
-
   receiveData: (data) =>
     @mixin(data)
     @onData(data)
 
   onData: (data) =>
     # Widgets override this to handle incoming data
+
+  getName: () =>
+    funcNameRegex = /function ([^\(]{1,})\(/;
+    results = (funcNameRegex).exec(@constructor.toString())
+    if (results && results.length > 1) then results[1].trim() else ""
 
 Dashing.AnimatedValue =
   get: Batman.Property.defaultAccessor.get
@@ -97,9 +97,10 @@ Dashing.widgets = widgets = {}
 Dashing.lastEvents = lastEvents = {}
 Dashing.debugMode = false
 
-source = new EventSource('events')
+source = new EventSource('/events')
 source.addEventListener 'open', (e) ->
-  console.log("Connection opened", e)
+  if Dashing.debugMode
+    console.log("Connection opened", e)
 
 source.addEventListener 'error', (e)->
   console.log("Connection error", e)

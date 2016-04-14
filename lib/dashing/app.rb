@@ -6,7 +6,6 @@ require 'coffee-script'
 require 'sass'
 require 'json'
 require 'yaml'
-require 'thin'
 
 SCHEDULER = Rufus::Scheduler.new
 
@@ -22,11 +21,6 @@ helpers Sinatra::ContentFor
 helpers do
   def protected!
     # override with auth logic
-  end
-
-  def authenticated?(token)
-    return true unless settings.auth_token
-    token && Rack::Utils.secure_compare(settings.auth_token, token)
   end
 end
 
@@ -55,7 +49,7 @@ end
 end
 
 not_found do
-  send_file File.join(settings.public_folder, '404.html'), status: 404
+  send_file File.join(settings.public_folder, '404.html')
 end
 
 at_exit do
@@ -73,8 +67,19 @@ end
 get '/events', provides: 'text/event-stream' do
   protected!
   response.headers['X-Accel-Buffering'] = 'no' # Disable buffering for nginx
+  response.headers['Access-Control-Allow-Origin'] = '*' # For Yaffle eventsource polyfill
+  response.headers['Cache-Control'] = 'no-cache' # For Yaffle eventsource polyfill
+  
   stream :keep_open do |out|
     settings.connections << out
+  
+    # For Yaffle eventsource polyfill
+    #Add 2k padding for IE
+    str = ":".ljust(2049) << "\n"
+    #add retry key
+    str << "retry: 2000\n"
+    out << str
+    
     out << latest_events
     out.callback { settings.connections.delete(out) }
   end
@@ -94,7 +99,8 @@ post '/dashboards/:id' do
   request.body.rewind
   body = JSON.parse(request.body.read)
   body['dashboard'] ||= params['id']
-  if authenticated?(body.delete("auth_token"))
+  auth_token = body.delete("auth_token")
+  if !settings.auth_token || settings.auth_token == auth_token
     send_event(params['id'], body, 'dashboards')
     204 # response without entity body
   else
@@ -106,7 +112,8 @@ end
 post '/widgets/:id' do
   request.body.rewind
   body = JSON.parse(request.body.read)
-  if authenticated?(body.delete("auth_token"))
+  auth_token = body.delete("auth_token")
+  if !settings.auth_token || settings.auth_token == auth_token
     send_event(params['id'], body)
     204 # response without entity body
   else
@@ -121,16 +128,6 @@ get '/views/:widget?.html' do
     file = File.join(settings.root, "widgets", params[:widget], "#{params[:widget]}.#{suffix}")
     return engines.first.new(file).render if File.exist? file
   end
-end
-
-Thin::Server.class_eval do
-  def stop_with_connection_closing
-    Sinatra::Application.settings.connections.dup.each(&:close)
-    stop_without_connection_closing
-  end
-
-  alias_method :stop_without_connection_closing, :stop
-  alias_method :stop, :stop_with_connection_closing
 end
 
 def send_event(id, body, target=nil)
